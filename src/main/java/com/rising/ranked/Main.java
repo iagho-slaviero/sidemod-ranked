@@ -1,0 +1,138 @@
+package com.rising.ranked;
+
+import com.mojang.authlib.GameProfile;
+import com.rising.ranked.commands.*;
+import com.rising.ranked.config.*;
+import com.rising.ranked.database.RankingDAO;
+import com.rising.ranked.events.BattleEndHandler;
+import com.rising.ranked.events.PlayerJoinHandler;
+import com.rising.ranked.gui.GuiConfig;
+import com.rising.ranked.manager.DuelManager;
+import com.rising.ranked.models.PlayerRanking;
+import com.rising.ranked.util.MojangAPIHelper;
+import com.rising.ranked.util.PlayerProfileCache;
+import com.rising.ranked.util.QueueTimeoutChecker;
+import net.minecraft.entity.player.EntityPlayerMP;
+import net.minecraft.server.MinecraftServer;
+import net.minecraftforge.fml.common.FMLCommonHandler;
+import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.common.Mod.EventHandler;
+import net.minecraftforge.fml.common.ModMetadata;
+import net.minecraftforge.fml.common.event.*;
+import org.apache.logging.log4j.Logger;
+
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.util.*;
+
+@Mod(
+        name = "RisingBattle",
+        version = "1.12.2-14.23.5.2860-universal",
+        acceptableRemoteVersions = "*",
+        modid = "risingbattle",
+        dependencies = "after:pixelmon"
+)
+public class Main
+{
+    public static Logger logger;
+    public static GuiConfig guiConfig;
+    public static ConfigManager configManager = new ConfigManager();
+    public static Connection databaseConnection;
+    public static List<PlayerRanking> rankingList = new ArrayList<>();
+    public static BattleEndHandler battleEndHandler;
+    public static PlayerJoinHandler playerJoinHandler;
+
+    @EventHandler
+    public void preInit(FMLPreInitializationEvent event) throws SQLException {
+        this.addMetadata(event);
+        logger = event.getModLog();
+        configManager.loadConfig();
+        databaseConnection = configManager.getConnection();
+        guiConfig = GuiConfigLoader.loadGuiConfig(logger);
+        ArenaConfigLoader.loadArenas(logger);
+        RankingDAO.createTableIfNotExists(databaseConnection);
+        DuelRulesConfigLoader.loadDuelRules(logger);
+
+        playerJoinHandler = new PlayerJoinHandler();
+        battleEndHandler = new BattleEndHandler();
+    }
+
+    @EventHandler
+    public void serverLoad(FMLServerStartingEvent event) {
+        event.registerServerCommand(new OpenGuiCommand());
+        event.registerServerCommand(new ReloadGuiCommand());
+        event.registerServerCommand(new SetArenaCommand());
+        event.registerServerCommand(new SetPointsCommand());
+        event.registerServerCommand(new ReloadDuelRulesCommand());
+        event.registerServerCommand(new DeleteTableCommand());
+        event.registerServerCommand(new ReloadArenaCommand());
+        DuelManager.startQueueChecker();
+        QueueTimeoutChecker.start();
+    }
+
+    @EventHandler
+    public void postInit(FMLPostInitializationEvent event) {
+
+    }
+
+    @EventHandler
+    public void init(FMLInitializationEvent event) {
+        fillRankingCache();
+        prefetchPlayerProfiles();
+//        MinecraftServer server = FMLCommonHandler.instance().getMinecraftServerInstance();
+//        server.addScheduledTask(() -> {
+//            Calendar cal = Calendar.getInstance();
+//            if (cal.get(Calendar.HOUR_OF_DAY) == 21) {
+//                TournamentManager.setTournamentActive(true);
+//            }
+//        });
+    }
+
+    @EventHandler
+    public void onServerStopping(FMLServerStoppingEvent event) {
+        for (PlayerRanking ranking : Main.rankingList) {
+            RankingDAO.saveOrUpdatePlayerRanking(Main.databaseConnection, ranking);
+        }
+    }
+
+    public static EntityPlayerMP getPlayerByUUID(UUID uuid) {
+        MinecraftServer server = FMLCommonHandler.instance().getMinecraftServerInstance();
+        return server.getPlayerList().getPlayerByUUID(uuid);
+    }
+
+    private void fillRankingCache() {
+        rankingList = RankingDAO.getOrderedPlayerIds(databaseConnection);
+    }
+
+    private void prefetchPlayerProfiles() {
+        for (PlayerRanking pr : rankingList) {
+            if (PlayerProfileCache.getProfile(pr.getName()) == null) {
+                GameProfile profile = MojangAPIHelper.fetchProfile(pr.getName());
+                PlayerProfileCache.putProfile(profile);
+            }
+        }
+    }
+
+    public static void fetchPlayerJoin(String name){
+        if(PlayerProfileCache.getProfile(name) == null){
+            GameProfile profile = MojangAPIHelper.fetchProfile(name);
+            PlayerProfileCache.putProfile(profile);
+        }
+    }
+
+    public static List<EntityPlayerMP> getAllOnlinePlayers() {
+        MinecraftServer server = FMLCommonHandler.instance().getMinecraftServerInstance();
+        return server.getPlayerList().getPlayers();
+    }
+
+    private void addMetadata(FMLPreInitializationEvent event) {
+        ModMetadata m = event.getModMetadata();
+        m.autogenerated = false;
+        m.modId = "rankingrising";
+        m.version = "1.12.2-14.23.5.2860-universal";
+        m.name = "RankingRising";
+        m.url = "";
+        m.description = "";
+        m.credits = "Motynha";
+    }
+}
